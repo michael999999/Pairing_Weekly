@@ -364,10 +364,14 @@ def main():
     # 依 combo 產生名單
     combo_rows = []
     for L in L_list:
+        # 正規化欄位型別以避免篩選失效
+        sel_tp_str = sel["trading_period"].astype(str)
+        sel_L_float = pd.to_numeric(sel["formation_length"], errors="coerce")
+
         if args.ignore_selection_formation:
-            sdf = sel[sel["trading_period"].isin(TP_list)].copy()
+            sdf = sel[sel_tp_str.isin(TP_list)].copy()
         else:
-            sdf = sel[(sel["formation_length"] == L) & (sel["trading_period"].isin(TP_list))].copy()
+            sdf = sel[(sel_L_float == float(L)) & (sel_tp_str.isin(TP_list))].copy()
 
         if sdf.empty:
             logging.warning(f"No pairs for L={L} after selection filtering.")
