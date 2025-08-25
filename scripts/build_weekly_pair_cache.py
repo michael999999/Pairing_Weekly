@@ -30,8 +30,7 @@ from typing import Tuple, List
 import numpy as np
 import pandas as pd
 import shutil
-from datetime import datetime
-
+from datetime import datetime, timezone
 
 def parse_list_floats(s: str) -> List[float]:
     return [float(x.strip()) for x in s.split(",") if x.strip()]
@@ -218,7 +217,7 @@ def build_one_combo(px_daily: pd.DataFrame,
         "z_window_weeks": int(z_window_weeks),
         "pairs_built": int(built),
         "pairs_skipped": int(skipped),
-        "built_at": datetime.utcnow().isoformat() + "Z"
+        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
     }
     with open(out_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
@@ -331,7 +330,7 @@ def main():
                     "z_window_weeks": int(Z),
                     "pairs_built": int(built),
                     "pairs_skipped": int(skipped),
-                    "built_at": datetime.utcnow().isoformat() + "Z"
+                    "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")
                 }
             )
 
