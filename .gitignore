@@ -1,0 +1,58 @@
+**.gitignore** (add Python-specific ignores):
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+*.pyc
+.ipynb_checkpoints/
+data/processed/
+logs/
+pairs/
+reports/
+results/
+test/
+plots/
+cache/
+論文 TXT/
+論文/
+cointegration_score/
+cointegration_score_all/
+temp/
+.env
+data/raw/sp500.dta
+*.pk
+*.pkl
+*.png
+*.csv
+*.dta
+*.txt
