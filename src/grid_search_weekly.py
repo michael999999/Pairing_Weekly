@@ -546,7 +546,8 @@ def print_table(best_list: List[BestResult]):
             num(r.z_entry, 1),
             num(r.z_exit, 1),
             ("none" if r.time_stop_weeks is None else f"{r.time_stop_weeks}w"),
-            num(r.cost_bps, 1),
+            #num(r.cost_bps, 1),
+            f"{int(r.cost_bps)}",
             pct(r.cum_return),
             pct(r.ann_return),
             pct(r.ann_vol),
@@ -564,20 +565,20 @@ def print_table(best_list: List[BestResult]):
         w = len(h)
         for i in range(len(rows_str)):
             w = max(w, len(rows_str[i][j]))
-        widths.append(w + 1)  # 每欄後留 1 空白
+        widths.append(w+1)  # 每欄後留 1 空白
 
     # 列印表頭
     header_line = "".join(h.ljust(widths[j]) for j, h in enumerate(headers)).rstrip()
-    print("Total best sets and performance:")
-    print(header_line)
-    print("-" * len(header_line))
+    print(" Total best sets and performance:\n")
+    print("", header_line)
+    print("", "-" * len(header_line))
 
     # 列印資料（數值右對齊，time_stop 左對齊以可讀）
     for row in rows_str:
         line_parts = []
         for j, v in enumerate(row):
             if headers[j] in ("time_stop",):
-                line_parts.append(v.ljust(widths[j]))
+                line_parts.append(v.rjust(widths[j]))
             elif headers[j] in ("formation_length","z_window","z_entry","z_exit",
                                 "cost_bps","sharpe","total_trades","avg_duration_days","profit_factor"):
                 line_parts.append(v.rjust(widths[j]))
@@ -585,6 +586,7 @@ def print_table(best_list: List[BestResult]):
                 line_parts.append(v.rjust(widths[j]))
         line = "".join(line_parts).rstrip()
         print(line)
+    print("", "-" * len(header_line))
 
 
 # ====== 主流程 ======
