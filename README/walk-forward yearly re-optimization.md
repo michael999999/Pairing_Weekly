@@ -14,15 +14,14 @@ python -m src.wf_yearly_reopt ^
 --price-type log ^
 --formation-lengths all ^
 --z-windows all ^
---trading-periods all ^
---train-periods 1 ^
+--trading-periods "2013,2014,2015,2016,2017,2018,2019" ^
+--train-periods 3 ^
 --grid-z-entry "0.5,1.0,1.5,2.0,2.5,3.0" ^
 --grid-z-exit "0.0,0.5,1.0,1.5,2.0,2.5" ^
---grid-time-stop "none,6,9" ^
+--grid-time-stop "none,9" ^
 --cost-bps 5 ^
 --capital 1000000 ^
 --n-pairs-cap 60 ^
---ignore-selection-formation ^
---n-jobs 8 ^
+--n-jobs 12 ^
 --backend loky ^
---out-dir reports\wf_yearly_reopt
+--out-dir reports\wf_yearly_reopt_5bps
