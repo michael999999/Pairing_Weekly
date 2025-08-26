@@ -570,16 +570,27 @@ def run_set_walkforward(L: float,
 # ========= 螢幕輸出（每年行 + 累計行） =========
 
 def print_oos_table(set_name: str, rows: List[OOSYearRow], total_metrics: Dict[str, float]):
-    """美化列印每年 OOS 與總計。"""
+    """美化列印每年 OOS 與總計（年份無小數、time_stop 右對齊、欄位對齊）。"""
     headers = ["year","z_entry","z_exit","time_stop","ann_return","ann_vol","sharpe","max_drawdown",
                "total_trades","win_rate","avg_duration_days","profit_factor"]
-    # 轉字串
-    data = []
+
+    def fmt_year(y) -> str:
+        try:
+            yf = float(y)
+            yi = int(round(yf))
+            return str(yi) if abs(yf - yi) < 1e-9 else str(y)
+        except Exception:
+            s = str(y)
+            return s.split(".")[0] if s.endswith(".0") else s
+
+    def pct(x): return f"{x:.2%}" if x == x and np.isfinite(x) else "NA"
+    def num(x, n=1): return f"{x:.{n}f}" if x == x and np.isfinite(x) else "NA"
+
+    # 準備資料列（字串）
+    data: List[List[str]] = []
     for r in rows:
-        def pct(x): return f"{x:.2%}" if x == x and np.isfinite(x) else "NA"
-        def num(x, n=1): return f"{x:.{n}f}" if x == x and np.isfinite(x) else "NA"
         data.append([
-            str(r.year),
+            fmt_year(r.year),
             num(r.z_entry,1),
             num(r.z_exit,1),
             ("none" if r.time_stop_weeks is None else f"{r.time_stop_weeks}w"),
@@ -590,29 +601,32 @@ def print_oos_table(set_name: str, rows: List[OOSYearRow], total_metrics: Dict[s
             f"{r.total_trades}",
             pct(r.win_rate),
             num(r.avg_duration_days,1),
-            ("inf" if not np.isfinite(r.profit_factor) else num(r.profit_factor,2))
+            ("inf" if not np.isfinite(r.profit_factor) else f"{r.profit_factor:.2f}")
         ])
-    # 欄寬
+
+    # 計算欄寬（含表頭），每欄後加 1 空白
     widths = []
     for j, h in enumerate(headers):
         w = len(h)
         for i in range(len(data)):
             w = max(w, len(data[i][j]))
         widths.append(w + 1)
-    # 列印
+
+    # 列印表頭
     print(f"\nOOS per-year ({set_name}):")
     header = "".join(h.ljust(widths[j]) for j, h in enumerate(headers)).rstrip()
     print(header)
     print("-" * len(header))
-    for row in data:
-        line = "".join(row[j].rjust(widths[j]) if headers[j] not in ("year","time_stop") else row[j].ljust(widths[j]) for j in range(len(headers))).rstrip()
-        print(line)
-    # 總計
-    def pct(x): return f"{x:.2%}" if x == x and np.isfinite(x) else "NA"
-    def num(x, n=2): return f"{x:.{n}f}" if x == x and np.isfinite(x) else "NA"
-    total_line = f"Total OOS -> Sharpe={num(total_metrics['sharpe'],2)} AnnRet={pct(total_metrics['ann_return'])} AnnVol={pct(total_metrics['ann_vol'])} MDD={pct(total_metrics['max_drawdown'])}"
-    print(total_line)
 
+    # 列印資料：全部右對齊（含 time_stop）；year 也右對齊以整齊
+    for row in data:
+        line = "".join(row[j].rjust(widths[j]) for j in range(len(headers))).rstrip()
+        print(line)
+
+    # 總計列
+    def num2(x, n=2): return f"{x:.{n}f}" if x == x and np.isfinite(x) else "NA"
+    total_line = f"Total OOS -> Sharpe={num2(total_metrics['sharpe'],2)} AnnRet={pct(total_metrics['ann_return'])} AnnVol={pct(total_metrics['ann_vol'])} MDD={pct(total_metrics['max_drawdown'])}"
+    print(total_line)
 
 # ========= 入口 =========
 
