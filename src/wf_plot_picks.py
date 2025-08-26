@@ -14,6 +14,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
+import matplotlib.dates as mdates
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -138,11 +139,25 @@ def plot_one_pick(pick_row: pd.Series, prices_path: Path, bench_symbol: str, out
         ax4.set_title("Drawdown (OOS)")
         ax4.legend()
 
+        # 將時間序列圖的 x 軸主刻度設為「每年」，且只顯示年份
+        year_locator = mdates.YearLocator(base=1)         # 每 1 年一格
+        year_fmt = mdates.DateFormatter('%Y')             # 僅顯示年份，如 2016
+
+        for ax in (ax2, ax3, ax4):  # 累積淨值、Rolling Sharpe、回撤
+            ax.xaxis.set_major_locator(year_locator)
+            ax.xaxis.set_major_formatter(year_fmt)
+            ax.tick_params(axis='x', labelrotation=0)
+
+        # 若想保險一點，對齊座標範圍
+        ax2.set_xlim(dates.min(), dates.max())
+        ax3.set_xlim(dates.min(), dates.max())
+        ax4.set_xlim(dates.min(), dates.max())
+
         fig.suptitle(title, fontsize=12)
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         out_path = out_dir / f"wf_pick_L{int(round(float(L)*100)):03d}_Z{Z:03d}.png"
-        plt.savefig(out_path, dpi=160)
+        plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[INFO] Saved figure: {out_path.resolve()}")
     except Exception as e:
