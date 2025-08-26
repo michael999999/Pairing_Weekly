@@ -2,12 +2,12 @@
 # -*- coding: utf-8 -*-
 
 """
-wf_yearly_global_pick.py
-- 典型「年度走動式（walk-forward）全域唯一最佳」：
-  每個訓練窗（前 n 年）在「所有 L×Z × 參數格點」中選出唯一最佳 (L*,Z*,θ*)，
-  並僅用它來回測下一年的 OOS。逐年滾動，輸出每年一行與全期間總結。
-- 不修改回測核心語義：T+1 收盤成交（PnL 用 pos.shift(1) × r），beta 用 beta.shift(1)，
-  成本模型與之前一致。
+wf_yearly_global_pick.py (parallelized)
+- 年度走動式（walk-forward）全域唯一最佳：
+  每個訓練窗（前 n 年）在「所有 L×Z × 參數格點」中並行搜尋，選出唯一最佳 (L*,Z*,θ*)，
+  只用它回測下一年的 OOS。逐年滾動，輸出每年一行與全期總結。
+- 平行化：訓練窗內以 (L,Z) 為單位平行搜尋（joblib loky/threading）。
+- 不修改核心語義：T+1 收盤成交（PnL 用 pos.shift(1) × r），beta 用 beta.shift(1)。
 - 註解：繁體中文；print/log 英文
 """
 
@@ -22,14 +22,13 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
-# 匯入 Loader
 try:
     from .cache_loader import RollingCacheLoader
 except Exception:
     from src.cache_loader import RollingCacheLoader
 
 
-# ====== 小工具 ======
+# ===== 工具 =====
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -41,7 +40,6 @@ def parse_ints_list(s: str) -> List[int]:
     return [int(x.strip()) for x in s.split(",") if x.strip()]
 
 def parse_time_stop_grid(s: str) -> List[Optional[int]]:
-    """grid 解析：支援 'none'→None（其餘為週數整數）。"""
     out: List[Optional[int]] = []
     for tok in s.split(","):
         t = tok.strip().lower()
@@ -52,7 +50,6 @@ def parse_time_stop_grid(s: str) -> List[Optional[int]]:
     return out
 
 def to_pair_id(df: pd.DataFrame) -> pd.DataFrame:
-    """保證 pair_id 欄位存在（方向化）。"""
     if "pair_id" in df.columns:
         return df
     if "stock1" in df.columns and "stock2" in df.columns:
@@ -64,7 +61,6 @@ def to_pair_id(df: pd.DataFrame) -> pd.DataFrame:
     raise KeyError("Selection CSV needs 'pair_id' or ('stock1','stock2') columns.")
 
 def list_LZ_from_cache(root: Path) -> Tuple[List[float], List[int]]:
-    """由週頻快取掃描可用的 L 與 Z。"""
     Ls = []
     Zs = set()
     if not root.exists():
@@ -86,7 +82,6 @@ def list_LZ_from_cache(root: Path) -> Tuple[List[float], List[int]]:
     return sorted(Ls), sorted(list(Zs))
 
 def ann_metrics(returns: pd.Series, freq: int = 252) -> Dict[str, float]:
-    """年化指標（日頻）。"""
     r = returns.dropna()
     if len(r) == 0:
         return dict(ann_return=0.0, ann_vol=0.0, sharpe=0.0)
@@ -101,10 +96,9 @@ def max_drawdown_curve(equity: pd.Series) -> pd.Series:
     return equity / peak - 1.0
 
 
-# ====== 部位與面板 ======
+# ===== 部位與面板 =====
 
 def build_positions(z: pd.DataFrame, z_entry: float, z_exit: float, time_stop_days: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """由 z 生成部位與持有日數（外部已 shift，避免前視）。"""
     pos = z.copy() * np.nan
     days = z.copy() * 0.0
     for pid in z.columns:
@@ -144,9 +138,9 @@ def build_positions(z: pd.DataFrame, z_entry: float, z_exit: float, time_stop_da
 @dataclass
 class YearPanel:
     dates: pd.DatetimeIndex
-    z_signal: pd.DataFrame   # [dates × pairs]（已 shift(1)）
-    r_pair: pd.DataFrame     # [dates × pairs]
-    beta_abs: pd.DataFrame   # [dates × pairs] 用於成本
+    z_signal: pd.DataFrame
+    r_pair: pd.DataFrame
+    beta_abs: pd.DataFrame
     pair_ids: List[str]
     w_per_pair: float
 
@@ -155,7 +149,6 @@ def prepare_year_panel(loader: RollingCacheLoader,
                        tp_start: str,
                        tp_end: str,
                        price_type: str) -> Optional[YearPanel]:
-    """讀取該年度所需矩陣，產出 YearPanel。"""
     date_range = (tp_start, tp_end)
     panel_z  = loader.load_panel(pair_ids, fields=("z",),  date_range=date_range, join="outer", allow_missing=True)
     panel_b  = loader.load_panel(pair_ids, fields=("beta",),date_range=date_range, join="outer", allow_missing=True)
@@ -208,13 +201,6 @@ def eval_year(year_panel: YearPanel,
               time_stop_days: Optional[int],
               cost_bps: float,
               capital: float) -> Tuple[pd.Series, Dict[str, float], Dict[str, float], List[float], List[int]]:
-    """
-    評估單年度，回傳
-    - ret（日報酬）
-    - metrics（ann_return/ann_vol/sharpe/max_drawdown）
-    - trade_stats（逐筆）：total_trades, win_rate, avg_duration_days, profit_factor
-    - trade_pnls, trade_durs（逐筆 PnL 與持有天）
-    """
     zsig = year_panel.z_signal
     r_pair = year_panel.r_pair
     beta_abs = year_panel.beta_abs
@@ -236,7 +222,7 @@ def eval_year(year_panel: YearPanel,
     m = ann_metrics(ret)
     m["max_drawdown"] = float(dd.min()) if len(dd) else 0.0
 
-    # 逐筆交易統計
+    # 逐筆交易（pair 級）
     trade_pnls: List[float] = []
     trade_durs: List[int] = []
     cost_rate = float(cost_bps) / 10000.0
@@ -277,7 +263,7 @@ def eval_year(year_panel: YearPanel,
     return ret, m, trade_stats, trade_pnls, trade_durs
 
 
-# ====== 主流程：年度走動式全域唯一最佳 ======
+# ===== 年度走動式（全域唯一最佳；訓練窗並行搜尋） =====
 
 @dataclass
 class YearRow:
@@ -304,22 +290,14 @@ def print_table(rows: List[YearRow], total: Dict[str, float]):
     data = []
     for r in rows:
         data.append([
-            str(int(float(r.year))),
-            num(r.L,1),
-            f"{int(r.Z)}",
-            num(r.z_entry,1),
-            num(r.z_exit,1),
+            str(int(float(r.year))), num(r.L,1), f"{int(r.Z)}",
+            num(r.z_entry,1), num(r.z_exit,1),
             ("none" if r.time_stop_weeks is None else f"{r.time_stop_weeks}w"),
-            pct(r.ann_return),
-            pct(r.ann_vol),
-            num(r.sharpe,2),
-            pct(r.max_drawdown),
-            f"{int(r.total_trades)}",
-            pct(r.win_rate),
-            num(r.avg_duration_days,1),
+            pct(r.ann_return), pct(r.ann_vol), num(r.sharpe,2), pct(r.max_drawdown),
+            f"{int(r.total_trades)}", pct(r.win_rate), num(r.avg_duration_days,1),
             ("inf" if not np.isfinite(r.profit_factor) else f"{r.profit_factor:.2f}")
         ])
-    widths = []
+    widths=[]
     for j,h in enumerate(headers):
         w = len(h)
         for i in range(len(data)):
@@ -333,13 +311,14 @@ def print_table(rows: List[YearRow], total: Dict[str, float]):
     def num2(x,n=2): return f"{x:.{n}f}" if x==x and np.isfinite(x) else "NA"
     print(f"Total OOS -> Sharpe={num2(total['sharpe'],2)} AnnRet={pct(total['ann_return'])} AnnVol={pct(total['ann_vol'])} MDD={pct(total['max_drawdown'])}")
 
+
 def main():
-    ap = argparse.ArgumentParser(description="Walk-forward yearly re-optimization with single global best (L×Z×θ) per year.")
+    ap = argparse.ArgumentParser(description="WF yearly re-optimization with single global best (L×Z×θ) per year [parallelized].")
     ap.add_argument("--top-csv", type=str, default="cache/top_pairs_annual.csv")
     ap.add_argument("--cache-root", type=str, default="cache/rolling_cache_weekly_v1")
     ap.add_argument("--price-type", type=str, default="log", choices=["log","raw"])
-    ap.add_argument("--formation-lengths", type=str, default="all")  # "all" 或逗號列表
-    ap.add_argument("--z-windows", type=str, default="all")          # "all" 或逗號列表
+    ap.add_argument("--formation-lengths", type=str, default="all")
+    ap.add_argument("--z-windows", type=str, default="all")
     ap.add_argument("--trading-periods", type=str, default="all")
     ap.add_argument("--train-periods", type=int, default=1)
     ap.add_argument("--grid-z-entry", type=str, default="0.5,1.0,1.5,2.0,2.5")
@@ -349,30 +328,30 @@ def main():
     ap.add_argument("--capital", type=float, default=1_000_000.0)
     ap.add_argument("--n-pairs-cap", type=int, default=60)
     ap.add_argument("--ignore-selection-formation", action="store_true")
+    ap.add_argument("--n-jobs", type=int, default=8, help="Parallel jobs for L×Z search per training window.")
+    ap.add_argument("--backend", type=str, default="loky", choices=["loky","threading"], help="Joblib backend.")
     ap.add_argument("--out-dir", type=str, default="reports/wf_yearly_global_pick")
     args = ap.parse_args()
 
     out_root = Path(args.out_dir); ensure_dir(out_root)
 
-    # 讀 selection 與年度序
+    # Selection 與年度序列
     sel = pd.read_csv(args.top_csv, encoding="utf-8-sig", low_memory=False)
     sel = to_pair_id(sel)
     years_all = (sorted(sel["trading_period"].astype(str).unique().tolist())
-                 if args.trading_periods.lower()=="all" else
-                 [x.strip() for x in args.trading_periods.split(",") if x.strip()])
+                 if args.trading_periods.lower()=="all"
+                 else [x.strip() for x in args.trading_periods.split(",") if x.strip()])
     if len(years_all) <= args.train_periods:
         print(f"[ERROR] Not enough periods: total={len(years_all)} <= train_periods={args.train_periods}")
         return
 
-    # L/Z 清單
+    # L、Z 空間
     if args.formation_lengths.lower()=="all" or args.z_windows.lower()=="all":
         Ls_avail, Zs_avail = list_LZ_from_cache(Path(args.cache_root))
     else:
         Ls_avail, Zs_avail = [], []
-    L_list = (Ls_avail if args.formation_lengths.lower()=="all"
-              else [float(x.strip()) for x in args.formation_lengths.split(",") if x.strip()])
-    Z_list = (Zs_avail if args.z_windows.lower()=="all"
-              else [int(x.strip()) for x in args.z_windows.split(",") if x.strip()])
+    L_list = Ls_avail if args.formation_lengths.lower()=="all" else [float(x.strip()) for x in args.formation_lengths.split(",") if x.strip()]
+    Z_list = Zs_avail if args.z_windows.lower()=="all" else [int(x.strip()) for x in args.z_windows.split(",") if x.strip()]
     if not L_list or not Z_list:
         print(f"[ERROR] No L or Z found. L={L_list}, Z={Z_list}")
         return
@@ -383,16 +362,11 @@ def main():
     tstop_grid   = parse_time_stop_grid(args.grid_time_stop)
 
     print(f"[INFO] Years={years_all} | train_periods={args.train_periods}")
-    print(f"[INFO] Search space: L={L_list} × Z={Z_list} × "
-          f"z_entry={z_entry_grid} × z_exit={z_exit_grid} × tstop={tstop_grid}")
+    print(f"[INFO] Parallel search per window with n_jobs={args.n_jobs}, backend={args.backend}")
+    print(f"[INFO] Space: L={L_list} × Z={Z_list} × z_entry={z_entry_grid} × z_exit={z_exit_grid} × tstop={tstop_grid}")
 
-    # 快取：每個 (L,Z,year) 的 YearPanel
-    panel_cache: Dict[Tuple[float,int,str], Optional[YearPanel]] = {}
-    # 快取：每個 (year) 的 pair_ids（照 Top-K）
-    pairs_cache: Dict[str, List[str]] = {}
-
+    # 工具：給年度產生 pair_id 清單
     def get_pairs_for_year(year: str, L: float) -> List[str]:
-        """依年度（必要時忽略 formation_length）挑 Top-K pair_id。"""
         if args.ignore_selection_formation:
             g = sel[sel["trading_period"].astype(str) == year].copy()
         else:
@@ -404,89 +378,95 @@ def main():
             g = g.sort_values(["rank_final"], ascending=True)
         return g["pair_id"].dropna().astype(str).unique().tolist()[:int(args.n_pairs_cap)]
 
-    def get_panel(L: float, Z: int, year: str) -> Optional[YearPanel]:
-        key = (float(L), int(Z), str(year))
-        if key in panel_cache:
-            return panel_cache[key]
-        pair_ids = get_pairs_for_year(year, L)
-        if not pair_ids:
-            panel_cache[key] = None
-            return None
-        # 時窗（全年）
-        t_start = f"{year}-01-01"; t_end = f"{year}-12-31"
+    # Worker：在訓練窗內計算某個 L×Z 的最佳 θ 與分數
+    def search_best_for_LZ(L: float, Z: int, train_years: List[str]) -> Optional[Tuple[Tuple[float,int,float,float,Optional[int]], Tuple[float,float,float]]]:
+        # 先建立 Loader（此 worker 專用）
         loader = RollingCacheLoader(root=args.cache_root, price_type=args.price_type,
                                     formation_length=float(L), z_window=int(Z), log_level="ERROR")
-        panel = prepare_year_panel(loader, pair_ids, t_start, t_end, price_type=args.price_type)
-        panel_cache[key] = panel
-        return panel
+        panels = []
+        for y in train_years:
+            pids = get_pairs_for_year(y, L)
+            if not pids:
+                continue
+            p = prepare_year_panel(loader, pids, f"{y}-01-01", f"{y}-12-31", price_type=args.price_type)
+            if p is not None:
+                panels.append((y, p))
+        if not panels:
+            return None
 
-    # 逐年走動
+        best_score = None
+        best_tuple = None
+        for ze in z_entry_grid:
+            for zx in z_exit_grid:
+                for tsw in tstop_grid:
+                    t_days = None if tsw is None else int(ceil(float(tsw)*5.0))
+                    rets = []
+                    for _, p in panels:
+                        ret_y, _, _, _, _ = eval_year(p, ze, zx, t_days, float(args.cost_bps), float(args.capital))
+                        rets.append(ret_y)
+                    if not rets:
+                        continue
+                    r_full = pd.concat(rets).sort_index()
+                    eq = (1.0 + r_full.fillna(0.0)).cumprod()
+                    m  = ann_metrics(r_full)
+                    cum_ret = float(eq.iloc[-1]-1.0) if len(eq) else 0.0
+                    score = (round(m["sharpe"],10), round(cum_ret,10), -round(m["ann_vol"],10))
+                    if (best_score is None) or (score > best_score):
+                        best_score = score
+                        best_tuple = (float(L), int(Z), float(ze), float(zx), (int(tsw) if tsw is not None else None))
+        if best_tuple is None:
+            return None
+        return best_tuple, best_score
+
     rows: List[YearRow] = []
     all_oos_returns: List[pd.Series] = []
 
+    # 逐年走動
     for i in range(args.train_periods, len(years_all)):
         train_years = years_all[i-args.train_periods:i]
         test_year   = years_all[i]
 
-        # 在訓練窗內搜尋全域唯一最佳 (L*,Z*,θ*)
+        # 訓練窗：平行搜尋所有 L×Z
+        tasks = [(L, Z) for L in L_list for Z in Z_list]
+        results = Parallel(n_jobs=int(args.n_jobs), backend=args.backend)(
+            delayed(search_best_for_LZ)(L, Z, train_years) for (L, Z) in tasks
+        )
+        # 取全域唯一最佳
         best_tuple = None
-        best_score = None  # tuple for sorting: (Sharpe, CumRet, -AnnVol)
-        for L in L_list:
-            for Z in Z_list:
-                # 先準備該 L×Z 在訓練窗各年的面板；若全 None 則略過
-                panels = []
-                for y in train_years:
-                    p = get_panel(L, Z, y)
-                    if p is not None:
-                        panels.append((y, p))
-                if not panels:
-                    continue
-                # 掃參數格
-                for ze in z_entry_grid:
-                    for zx in z_exit_grid:
-                        for tsw in tstop_grid:
-                            t_days = None if tsw is None else int(ceil(float(tsw)*5.0))
-                            rets = []
-                            for _, p in panels:
-                                ret_y, _, _, _, _ = eval_year(p, ze, zx, t_days,
-                                                              float(args.cost_bps), float(args.capital))
-                                rets.append(ret_y)
-                            if not rets:
-                                continue
-                            r_full = pd.concat(rets).sort_index()
-                            eq = (1.0 + r_full.fillna(0.0)).cumprod()
-                            m  = ann_metrics(r_full)
-                            cum_ret = float(eq.iloc[-1] - 1.0) if len(eq) else 0.0
-                            score = (round(m["sharpe"],10), round(cum_ret,10), -round(m["ann_vol"],10))
-                            if (best_score is None) or (score > best_score):
-                                best_score = score
-                                best_tuple = (float(L), int(Z), float(ze), float(zx), (int(tsw) if tsw is not None else None))
+        best_score = None
+        for res in results:
+            if res is None:
+                continue
+            tpl, score = res
+            if (best_score is None) or (score > best_score):
+                best_tuple, best_score = tpl, score
+
         if best_tuple is None:
-            print(f"[WARN] No valid panel in training window {train_years} -> skip test year {test_year}")
+            print(f"[WARN] No valid (L,Z) in training {train_years}. Skip test year {test_year}.")
             continue
 
         Lstar, Zstar, ze_star, zx_star, tsw_star = best_tuple
         t_days_star = None if tsw_star is None else int(ceil(float(tsw_star)*5.0))
-
-        # 測試窗 OOS（只用全域唯一最佳）
-        p_test = get_panel(Lstar, Zstar, test_year)
-        if p_test is None:
-            print(f"[WARN] No panel for test year {test_year} at L={Lstar},Z={Zstar}. skip.")
+        # 測試窗 OOS
+        pids_test = get_pairs_for_year(test_year, Lstar)
+        if not pids_test:
+            print(f"[WARN] No pairs for test year {test_year} at L={Lstar}. Skip.")
             continue
-        ret_oos, m_y, tstats_y, _, _ = eval_year(
-            p_test, ze_star, zx_star, t_days_star,
-            float(args.cost_bps), float(args.capital)
-        )
+        loader = RollingCacheLoader(root=args.cache_root, price_type=args.price_type,
+                                    formation_length=float(Lstar), z_window=int(Zstar), log_level="ERROR")
+        p_test = prepare_year_panel(loader, pids_test, f"{test_year}-01-01", f"{test_year}-12-31", price_type=args.price_type)
+        if p_test is None:
+            print(f"[WARN] No panel for test year {test_year} at L={Lstar},Z={Zstar}. Skip.")
+            continue
+
+        ret_oos, m_y, tstats_y, _, _ = eval_year(p_test, ze_star, zx_star, t_days_star, float(args.cost_bps), float(args.capital))
         all_oos_returns.append(ret_oos)
 
         rows.append(YearRow(
-            year=str(test_year),
-            L=float(Lstar), Z=int(Zstar),
+            year=str(test_year), L=float(Lstar), Z=int(Zstar),
             z_entry=float(ze_star), z_exit=float(zx_star),
             time_stop_weeks=(int(tsw_star) if tsw_star is not None else None),
-            ann_return=float(m_y["ann_return"]),
-            ann_vol=float(m_y["ann_vol"]),
-            sharpe=float(m_y["sharpe"]),
+            ann_return=float(m_y["ann_return"]), ann_vol=float(m_y["ann_vol"]), sharpe=float(m_y["sharpe"]),
             max_drawdown=float(m_y["max_drawdown"]),
             total_trades=int(tstats_y["total_trades"]),
             win_rate=float(tstats_y["win_rate"]) if tstats_y["win_rate"] == tstats_y["win_rate"] else np.nan,
@@ -505,10 +485,8 @@ def main():
     m_full   = ann_metrics(ret_full)
     m_full["max_drawdown"] = float(dd_full.min()) if len(dd_full) else 0.0
 
-    # 螢幕列印
+    # 螢幕列印與輸出
     print_table(rows, m_full)
-
-    # 檔案輸出
     df_rows = pd.DataFrame([r.__dict__ for r in rows]).sort_values("year")
     df_rows.to_csv(out_root / "global_reopt_oos_yearly.csv", index=False, encoding="utf-8-sig")
     eq_df = pd.DataFrame({"date": ret_full.index, "ret": ret_full.values})
@@ -516,10 +494,8 @@ def main():
     eq_df.to_csv(out_root / "global_reopt_oos_returns.csv", index=False, encoding="utf-8-sig")
     with open(out_root / "global_reopt_summary.json", "w", encoding="utf-8") as f:
         json.dump(dict(
-            ann_return=float(m_full["ann_return"]),
-            ann_vol=float(m_full["ann_vol"]),
-            sharpe=float(m_full["sharpe"]),
-            max_drawdown=float(m_full["max_drawdown"])
+            ann_return=float(m_full["ann_return"]), ann_vol=float(m_full["ann_vol"]),
+            sharpe=float(m_full["sharpe"]), max_drawdown=float(m_full["max_drawdown"])
         ), f, ensure_ascii=False, indent=2)
 
     print(f"[INFO] Outputs saved under: {out_root.resolve()}")
