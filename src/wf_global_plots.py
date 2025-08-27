@@ -65,11 +65,16 @@ def max_dd(eq: pd.Series) -> float:
 
 def to_yearly(ret: pd.Series) -> pd.DataFrame:
     """將日報酬聚合為年度報酬（複利）。"""
-    df = ret.to_frame("ret")
-    df["year"] = df.index.year
-    out = df.groupby("year").apply(lambda g: (1.0+g["ret"]).prod()-1.0).rename("ret").reset_index()
-    out["year"] = out["year"].astype(str)
+    r = ret.copy()
+    # 確保為 DatetimeIndex
+    if not isinstance(r.index, pd.DatetimeIndex):
+        r.index = pd.to_datetime(r.index, errors="coerce")
+    # 向量化複利聚合：按年份分組
+    comp = (1.0 + r).groupby(r.index.year).prod() - 1.0
+    out = comp.rename_axis("year").reset_index(name="ret")
+    out["year"] = out["year"].astype(str) # 關鍵：轉字串
     return out
+    #return comp.rename_axis("year").reset_index(name="ret")
 
 def main():
     ap = argparse.ArgumentParser(description="WF global-pick plots vs benchmark (with target-vol option).")
@@ -99,9 +104,6 @@ def main():
     rdf = rdf.set_index("date")
     rdf.index = pd.to_datetime(rdf.index)
     dates = rdf.index  # 改用索引日期
-
-    rdf["ret"] = pd.to_numeric(rdf["ret"], errors="coerce").fillna(0.0)
-    rdf["equity"] = pd.to_numeric(rdf["equity"], errors="coerce")
 
     # 基準
     bench_eq, bench_ret = load_benchmark_series(Path(args.prices), args.benchmark_symbol, dates)
