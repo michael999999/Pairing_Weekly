@@ -93,7 +93,13 @@ def main():
         if c in ydf.columns: ydf[c]=pd.to_numeric(ydf[c], errors="coerce")
 
     rdf = pd.read_csv(returns_csv, parse_dates=["date"]).sort_values("date")
-    dates = pd.to_datetime(rdf["date"])
+    # 轉型並設置日期為索引（DatetimeIndex）
+    rdf["ret"]    = pd.to_numeric(rdf["ret"], errors="coerce").fillna(0.0)
+    rdf["equity"] = pd.to_numeric(rdf["equity"], errors="coerce")
+    rdf = rdf.set_index("date")
+    rdf.index = pd.to_datetime(rdf.index)
+    dates = rdf.index  # 改用索引日期
+
     rdf["ret"] = pd.to_numeric(rdf["ret"], errors="coerce").fillna(0.0)
     rdf["equity"] = pd.to_numeric(rdf["equity"], errors="coerce")
 
