@@ -301,20 +301,25 @@ def main():
 
     # ===== 兩行一組的漂亮列印（Daily 一行、Weekly 一行；Weekly 行附 Δ） =====
     def print_pretty_pairs_two_lines(df: pd.DataFrame, target: float, cost_bps: float, out_txt: str):
+        # 欄寬設定
         w = {
             "L": 5, "family": 8, "src": 2, "z": 5,
-            "ret": 10, "sh": 8, "mdd": 11,
-            "dret": 10, "dsh": 8, "dmdd": 11
+            "ret": 11, "sh": 8, "mdd": 12,   # 稍微放大欄寬，避免數字擠在一起
+            "dret": 12, "dsh": 10, "dmdd": 12
         }
         title = f"=== Daily vs. Weekly Sets (matched L & family; cost_bps={cost_bps:g}, target_vol={'NA' if target<=0 else f'{int(round(target*100))}%'} ) ==="
         lines = [title]
         header = (
             f"{'L':>{w['L']}}  {'family':<{w['family']}}  {'S':>{w['src']}}  "
-            f"{'z':>{w['z']}}  {'ret@TV':>{w['ret']}}  {'Sharpe':>{w['sh']}}  {'MDD@TV':>{w['mdd']}}  "
-            f"{'Δret@TV':>{w['dret']}}  {'ΔSharpe':>{w['dsh']}}  {'ΔMDD@TV':>{w['dmdd']}}"
+            f"{'z':>{w['z']}}  {'return@TV':>{w['ret']}}  {'Sharpe':>{w['sh']}}  {'MDD@TV':>{w['mdd']}}  "
+            f"{'Δreturn@TV':>{w['dret']}}  {'ΔSharpe':>{w['dsh']}}  {'ΔMDD@TV':>{w['dmdd']}}"
         )
         lines.append(header)
         lines.append("-" * len(header))
+
+        blank_L = " " * w["L"]
+        blank_family = " " * w["family"]
+
         for _, r in df.iterrows():
             # Daily line（Δ 欄留白）
             line_d = (
@@ -329,10 +334,10 @@ def main():
                 f"{'':>{w['dsh']}}  "
                 f"{'':>{w['dmdd']}}"
             )
-            # Weekly line（附 Δ）
+            # Weekly line（不重複顯示 L 與 family；在 Weekly 行顯示 Δ）
             line_w = (
-                f"{float(r['L']):>{w['L']}.1f}  "
-                f"{str(r['family']):<{w['family']}}  "
+                f"{blank_L}  "
+                f"{blank_family}  "
                 f"{'W':>{w['src']}}  "
                 f"{int(r['weekly_z']):>{w['z']}}  "
                 f"{fmt_pct(r['weekly_ret_at_tv']):>{w['ret']}}  "
@@ -344,6 +349,7 @@ def main():
             )
             lines.append(line_d)
             lines.append(line_w)
+
         txt = "\n".join(lines)
         print(txt)
         with open(out_txt, "w", encoding="utf-8") as f:
@@ -355,7 +361,7 @@ def main():
         out_txt=os.path.join(args.out_dir, "paired_table_pretty_2lines.txt")
     )
 
-    # ===== 整體摘要（summary.txt：表格風格） =====
+    # ===== 整體摘要（summary.txt：表格風格 + family 勝率子表） =====
     def _wins(x: pd.Series, greater_is_better: bool = True):
         x = pd.to_numeric(x, errors="coerce")
         if greater_is_better:
@@ -363,7 +369,7 @@ def main():
         else:
             return int((x < 0).sum()), int((x > 0).sum()), int((x == 0).sum())
 
-    # 計算
+    # 高階摘要（全體配對）
     n_pairs = len(m)
     sh_avg = pd.to_numeric(m["delta_sharpe"]).mean()
     sh_w, sh_l, sh_t = _wins(m["delta_sharpe"], True)
@@ -380,7 +386,7 @@ def main():
     else:
         md_avg, md_w, md_l, md_t = (np.nan, 0, 0, 0)
 
-    # 排版
+    # 排版（總表）
     colw = {"metric": 30, "avg": 14, "w": 7, "l": 7, "t": 7}
     title = f"=== Summary (matched L & family; cost_bps={wc:g}, target_vol={'NA' if target<=0 else f'{int(round(target*100))}%'} ) ==="
     lines = [title, f"Matched pairs: {n_pairs}", ""]
@@ -390,6 +396,39 @@ def main():
     lines.append(f"{'Sharpe':<{colw['metric']}}{fmt_dec(sh_avg,3):>{colw['avg']}}{sh_w:>{colw['w']}}{sh_l:>{colw['l']}}{sh_t:>{colw['t']}}")
     lines.append(f"{f'Return@{int(round(target*100))}% vol':<{colw['metric']}}{fmt_dec(rt_avg,3):>{colw['avg']}}{rt_w:>{colw['w']}}{rt_l:>{colw['l']}}{rt_t:>{colw['t']}}")
     lines.append(f"{f'MDD@{int(round(target*100))}% vol (smaller is better)':<{colw['metric']}}{fmt_dec(md_avg,3):>{colw['avg']}}{md_w:>{colw['w']}}{md_l:>{colw['l']}}{md_t:>{colw['t']}}")
+
+    # ---- 各 family 勝率子表（Weekly 勝出百分比）----
+    lines.append("")
+    sub_title = "Family win rate (weekly wins %, matched L & family)"
+    lines.append(sub_title)
+
+    fam_colw = {"family": 10, "ret": 16, "sh": 12, "mdd": 20}
+    fam_header = f"{'family':<{fam_colw['family']}}{'Return@TV':>{fam_colw['ret']}}{'Sharpe':>{fam_colw['sh']}}{'MDD@TV (smaller better)':>{fam_colw['mdd']}}"
+    lines.append(fam_header)
+    lines.append("-" * len(fam_header))
+
+    wrf_rows = []
+    for fam, g in m.groupby("family"):
+        # Return@TV 勝率（target>0 時才有）
+        if target > 0 and g["delta_ret_at_tv"].notna().any():
+            wr_ret = float((g["delta_ret_at_tv"] > 0).mean()) * 100.0
+        else:
+            wr_ret = np.nan
+        # Sharpe 勝率
+        wr_sh = float((g["delta_sharpe"] > 0).mean()) * 100.0 if g["delta_sharpe"].notna().any() else np.nan
+        # MDD@TV 勝率（小為佳）
+        if target > 0 and g["delta_mdd_at_tv"].notna().any():
+            wr_mdd = float((g["delta_mdd_at_tv"] < 0).mean()) * 100.0
+        else:
+            wr_mdd = np.nan
+
+        lines.append(
+            f"{str(fam):<{fam_colw['family']}}"
+            f"{(fmt_dec(wr_ret,1)+'%') if np.isfinite(wr_ret) else '—':>{fam_colw['ret']}}"
+            f"{(fmt_dec(wr_sh,1)+'%') if np.isfinite(wr_sh) else '—':>{fam_colw['sh']}}"
+            f"{(fmt_dec(wr_mdd,1)+'%') if np.isfinite(wr_mdd) else '—':>{fam_colw['mdd']}}"
+        )
+
     summary_txt = "\n".join(lines)
     print(summary_txt)
     with open(os.path.join(args.out_dir, "summary.txt"), "w", encoding="utf-8") as f:
