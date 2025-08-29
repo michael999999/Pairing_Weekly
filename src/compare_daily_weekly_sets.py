@@ -15,10 +15,13 @@ compare_daily_weekly_sets.py
   5) 散佈圖：
      - scatter_sharpe_daily_vs_weekly.png
      - scatter_ret_targetVol_daily_vs_weekly.png（target-vol > 0）
-  6) 勝率熱圖（按 formation_length 匯總）：
-     - heatmap_winrate_by_L.png（欄：ret@TV、Sharpe、MDD@TV；值為 %）
-     - winrate_by_L.csv
-  7) summary.txt（勝出次數與平均差）
+  6) 勝率熱圖（按 formation_length 與按 family 匯總）：
+     - heatmap_winrate_by_L.png、winrate_by_L.csv
+     - heatmap_winrate_by_family.png、winrate_by_family.csv
+  7) 漂亮對齊的成對列印與存檔：
+     - paired_table_pretty.txt（對齊文字版）
+     - paired_table.csv（精簡欄位，便於複製到論文表格）
+  8) summary.txt（勝出次數與平均差）
 - 注意：此為 summary 近似版（ret@TV 與 MDD@TV 以年化數字線性縮放近似），正式檢定需用時間序列重算。
 
 使用者情境
@@ -97,6 +100,22 @@ def safe_div(a: float, b: float) -> float:
     except Exception:
         return np.nan
 
+def fmt_pct(x: float, d: int = 2, dash: str = "—") -> str:
+    try:
+        if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+            return dash
+        return f"{float(x)*100:.{d}f}%"
+    except Exception:
+        return dash
+
+def fmt_dec(x: float, d: int = 2, dash: str = "—") -> str:
+    try:
+        if x is None or (isinstance(x, float) and (np.isnan(x) or np.isinf(x))):
+            return dash
+        return f"{float(x):.{d}f}"
+    except Exception:
+        return dash
+
 
 # ====== 主流程 ======
 
@@ -118,7 +137,7 @@ def main():
     ap.add_argument("--target-vol", type=float, default=0.10, help="Target annualized volatility (0.10=10%%). 0 disables ret@TV & MDD@TV plots.")
 
     # 視窗映射（日→週）
-    ap.add_argument("--mapping", type=str, default="21:4,42:8,63:13,126:26,252:52", help="Daily-to-weekly z-window mapping (e.g., '21:4,42:8,63:13,126:26,252:52')")
+    ap.add_argument("--mapping", type=str, default="21:4,42:8,63:13,126:26,252:52", help="Daily-to-weekly z-window mapping")
 
     # 重複鍵取捨
     ap.add_argument("--select-rule", type=str, default="sharpe", choices=["sharpe","ann_return"], help="If duplicates per (L,z) exist, pick the row with highest metric.")
@@ -284,6 +303,55 @@ def main():
     m[cols].to_csv(out_csv, index=False)
     print(f"[WRITE] {out_csv}")
 
+    # ===== 精簡版成對表（CSV）＋ 漂亮對齊列印（TXT + console） =====
+    paired_cols = [
+        "L","family","daily_z","weekly_z",
+        "daily_sharpe","weekly_sharpe","delta_sharpe",
+        "daily_ret_at_tv","weekly_ret_at_tv","delta_ret_at_tv",
+        "daily_mdd_at_tv","weekly_mdd_at_tv","delta_mdd_at_tv"
+    ]
+    paired_df = m[paired_cols].copy()
+    paired_df.to_csv(os.path.join(args.out_dir, "paired_table.csv"), index=False)
+    print(f"[WRITE] {os.path.join(args.out_dir, 'paired_table.csv')}")
+
+    def print_pretty_table(df: pd.DataFrame, target: float, out_txt: str):
+        # 欄寬設定
+        w = {
+            "L": 5, "family": 8,
+            "dz": 5, "wz": 5,
+            "ret": 10, "sh": 9, "mdd": 10,
+            "dret": 10, "dsh": 9, "dmdd": 10
+        }
+        title = f"=== Daily vs. Weekly Sets (matched L & family; cost_bps={wc:g}, target_vol={'NA' if target<=0 else f'{int(round(target*100))}%'} ) ==="
+        lines = [title]
+        header = f"{'L':>{w['L']}}  {'family':<{w['family']}}  {'D_z':>{w['dz']}}  {'D_ret@TV':>{w['ret']}}  {'D_Sharpe':>{w['sh']}}  {'D_MDD@TV':>{w['mdd']}}   {'W_z':>{w['wz']}}  {'W_ret@TV':>{w['ret']}}  {'W_Sharpe':>{w['sh']}}  {'W_MDD@TV':>{w['mdd']}}   {'Δret@TV':>{w['dret']}}  {'ΔSharpe':>{w['dsh']}}  {'ΔMDD@TV':>{w['dmdd']}}"
+        lines.append(header)
+        lines.append("-" * len(header))
+        for _, r in df.iterrows():
+            line = (
+                f"{float(r['L']):>{w['L']}.1f}  "
+                f"{str(r['family']):<{w['family']}}  "
+                f"{int(r['daily_z']):>{w['dz']}}  "
+                f"{fmt_pct(r['daily_ret_at_tv']):>{w['ret']}}  "
+                f"{fmt_dec(r['daily_sharpe']):>{w['sh']}}  "
+                f"{fmt_pct(r['daily_mdd_at_tv']):>{w['mdd']}}   "
+                f"{int(r['weekly_z']):>{w['wz']}}  "
+                f"{fmt_pct(r['weekly_ret_at_tv']):>{w['ret']}}  "
+                f"{fmt_dec(r['weekly_sharpe']):>{w['sh']}}  "
+                f"{fmt_pct(r['weekly_mdd_at_tv']):>{w['mdd']}}   "
+                f"{fmt_dec(r['delta_ret_at_tv']):>{w['dret']}}  "
+                f"{fmt_dec(r['delta_sharpe']):>{w['dsh']}}  "
+                f"{fmt_dec(r['delta_mdd_at_tv']):>{w['dmdd']}}"
+            )
+            lines.append(line)
+        txt = "\n".join(lines)
+        print(txt)
+        with open(out_txt, "w", encoding="utf-8") as f:
+            f.write(txt)
+        print(f"[WRITE] {out_txt}")
+
+    print_pretty_table(paired_df, target=target, out_txt=os.path.join(args.out_dir, "paired_table_pretty.txt"))
+
     # ===== 整體摘要（summary.txt） =====
     def _wins(x: pd.Series, greater_is_better: bool = True):
         x = pd.to_numeric(x, errors="coerce")
@@ -368,7 +436,6 @@ def main():
             x3 = np.arange(len(labels_tv))
             fig, ax = plt.subplots(figsize=(max(7, 0.45*len(labels_tv) + 2), 4))
             w = 0.38
-            # 轉為正數百分比顯示
             y1 = (dfp["daily_mdd_at_tv"].abs()*100.0).values
             y2 = (dfp["weekly_mdd_at_tv"].abs()*100.0).values
             r1 = ax.bar(x3 - w/2, y1, width=w, label=f"Daily MDD @{int(round(target*100))}% vol")
@@ -432,23 +499,18 @@ def main():
 
     # ===== 勝率熱圖（按 formation_length 匯總） =====
     try:
-        # 定義勝出判準：
-        # - ret@TV：weekly_ret_at_tv > daily_ret_at_tv
-        # - Sharpe：weekly_sharpe > daily_sharpe
-        # - MDD@TV：weekly_mdd_at_tv < daily_mdd_at_tv（越小越好）
         dfL = m.copy()
         grp = dfL.groupby("L")
 
         rows = []
         for L, g in grp:
-            # 計算分母（有效樣本數）
             n_sh = int(g["delta_sharpe"].notna().sum())
             n_rt = int(g["delta_ret_at_tv"].notna().sum()) if target > 0 else 0
             n_md = int(g["delta_mdd_at_tv"].notna().sum()) if target > 0 else 0
 
             sh_win_rate = float((g["delta_sharpe"] > 0).mean()) * 100.0 if n_sh > 0 else np.nan
             rt_win_rate = float((g["delta_ret_at_tv"] > 0).mean()) * 100.0 if n_rt > 0 else np.nan
-            md_win_rate = float((g["delta_mdd_at_tv"] < 0).mean()) * 100.0 if n_md > 0 else np.nan  # 小為佳
+            md_win_rate = float((g["delta_mdd_at_tv"] < 0).mean()) * 100.0 if n_md > 0 else np.nan
 
             rows.append(dict(
                 L=float(L),
@@ -462,7 +524,6 @@ def main():
         wr.to_csv(out_wr_csv)
         print(f"[WRITE] {out_wr_csv}")
 
-        # 畫熱圖（值為 %，顯示到 0 位小數）
         plt.figure(figsize=(6, max(3.5, 0.5*len(wr))))
         data = wr[["win_rate_ret_at_tv","win_rate_sharpe","win_rate_mdd_at_tv"]]
         sns.heatmap(
@@ -478,7 +539,51 @@ def main():
         plt.tight_layout(); plt.savefig(fp); plt.close()
         print(f"[WRITE] {fp}")
     except Exception as e:
-        logging.warning(f"winrate heatmap failed: {repr(e)}")
+        logging.warning(f"winrate heatmap by L failed: {repr(e)}")
+
+    # ===== 勝率熱圖（按 family 匯總） =====
+    try:
+        dff = m.copy()
+        grp = dff.groupby("family")
+
+        rows = []
+        for fam, g in grp:
+            n_sh = int(g["delta_sharpe"].notna().sum())
+            n_rt = int(g["delta_ret_at_tv"].notna().sum()) if target > 0 else 0
+            n_md = int(g["delta_mdd_at_tv"].notna().sum()) if target > 0 else 0
+
+            sh_win_rate = float((g["delta_sharpe"] > 0).mean()) * 100.0 if n_sh > 0 else np.nan
+            rt_win_rate = float((g["delta_ret_at_tv"] > 0).mean()) * 100.0 if n_rt > 0 else np.nan
+            md_win_rate = float((g["delta_mdd_at_tv"] < 0).mean()) * 100.0 if n_md > 0 else np.nan
+
+            rows.append(dict(
+                family=str(fam),
+                win_rate_ret_at_tv=rt_win_rate,
+                win_rate_sharpe=sh_win_rate,
+                win_rate_mdd_at_tv=md_win_rate
+            ))
+
+        wrf = pd.DataFrame(rows).sort_values("family").set_index("family")
+        out_wrf_csv = os.path.join(args.out_dir, "winrate_by_family.csv")
+        wrf.to_csv(out_wrf_csv)
+        print(f"[WRITE] {out_wrf_csv}")
+
+        plt.figure(figsize=(6, max(3.5, 0.5*len(wrf))))
+        data = wrf[["win_rate_ret_at_tv","win_rate_sharpe","win_rate_mdd_at_tv"]]
+        sns.heatmap(
+            data,
+            annot=True, fmt=".0f",
+            cmap="YlGnBu", cbar_kws={"label":"Win rate (%)"},
+            vmin=0, vmax=100
+        )
+        plt.title("Weekly win rate by family (D↔W window)")
+        plt.xlabel("Metric")
+        plt.ylabel("Family (D↔W)")
+        fp = os.path.join(args.out_dir, "heatmap_winrate_by_family.png")
+        plt.tight_layout(); plt.savefig(fp); plt.close()
+        print(f"[WRITE] {fp}")
+    except Exception as e:
+        logging.warning(f"winrate heatmap by family failed: {repr(e)}")
 
     print("Done.")
 
